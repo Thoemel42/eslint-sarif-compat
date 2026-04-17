@@ -1,11 +1,10 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { ESLint } from "eslint";
 
 const LINT_TARGETS = ["src", ".storybook", "vite.config.ts", "eslint.config.js"];
 
-function parseArgs(argv) {
+export function parseArgs(argv) {
   let outputFile;
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -25,11 +24,11 @@ function parseArgs(argv) {
   return { outputFile };
 }
 
-function toSarifLevel(severity) {
+export function toSarifLevel(severity) {
   return severity === 2 ? "error" : "warning";
 }
 
-function toRegion(message) {
+export function toRegion(message) {
   const region = {};
 
   if (message.line) {
@@ -48,7 +47,7 @@ function toRegion(message) {
   return Object.keys(region).length > 0 ? region : undefined;
 }
 
-function ensureArtifact(artifacts, artifactIndexByUri, filePath) {
+export function ensureArtifact(artifacts, artifactIndexByUri, filePath) {
   const uri = pathToFileURL(path.resolve(filePath)).href;
 
   let index = artifactIndexByUri.get(uri);
@@ -65,7 +64,7 @@ function ensureArtifact(artifacts, artifactIndexByUri, filePath) {
   return { uri, index };
 }
 
-function toSarifResults(results, artifacts, artifactIndexByUri, ruleIndexById) {
+export function toSarifResults(results, artifacts, artifactIndexByUri, ruleIndexById) {
   const sarifResults = [];
 
   for (const result of results) {
@@ -105,8 +104,9 @@ function toSarifResults(results, artifacts, artifactIndexByUri, ruleIndexById) {
   return sarifResults;
 }
 
-async function main() {
+export async function main() {
   const { outputFile } = parseArgs(process.argv.slice(2));
+  const { ESLint } = await import("eslint");
 
   const eslint = new ESLint();
   const results = await eslint.lintFiles(LINT_TARGETS);
@@ -162,7 +162,12 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  process.stderr.write(`${error instanceof Error ? error.stack : String(error)}\n`);
-  process.exit(2);
-});
+const isDirectExecution =
+  process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url;
+
+if (isDirectExecution) {
+  main().catch((error) => {
+    process.stderr.write(`${error instanceof Error ? error.stack : String(error)}\n`);
+    process.exit(2);
+  });
+}

@@ -1,75 +1,114 @@
+#!/usr/bin/env node
 import fs from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { ESLint } from "eslint";
 
-const LINT_TARGETS = ["src", ".storybook", "vite.config.ts", "eslint.config.js"];
+export const LINT_TARGETS = ["src", ".storybook", "vite.config.ts", "eslint.config.js"];
+export const SRCROOT_URI_BASE_ID = "%SRCROOT%";
 
-function parseArgs(argv) {
+export function parseArgs(argv) {
   let outputFile;
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
 
     if (arg === "-o" || arg === "--output-file") {
-      outputFile = argv[i + 1];
+      const value = argv[i + 1];
+      if (!value || value.startsWith("-")) {
+        throw new Error("Missing value for --output-file");
+      }
+      outputFile = value;
       i += 1;
       continue;
     }
 
     if (arg.startsWith("--output-file=")) {
-      outputFile = arg.slice("--output-file=".length);
+      const value = arg.slice("--output-file=".length);
+      if (!value) {
+        throw new Error("Missing value for --output-file");
+      }
+      outputFile = value;
     }
   }
 
   return { outputFile };
 }
 
-function toSarifLevel(severity) {
+export function toSarifLevel(severity) {
   return severity === 2 ? "error" : "warning";
 }
 
-function toRegion(message) {
+export function toRegion(message) {
   const region = {};
 
-  if (message.line) {
+  if (message.line !== undefined && message.line !== null) {
     region.startLine = message.line;
   }
-  if (message.column) {
+  if (message.column !== undefined && message.column !== null) {
     region.startColumn = message.column;
   }
-  if (message.endLine) {
+  if (message.endLine !== undefined && message.endLine !== null) {
     region.endLine = message.endLine;
   }
-  if (message.endColumn) {
+  if (message.endColumn !== undefined && message.endColumn !== null) {
     region.endColumn = message.endColumn;
   }
 
   return Object.keys(region).length > 0 ? region : undefined;
 }
 
-function ensureArtifact(artifacts, artifactIndexByUri, filePath) {
-  const uri = pathToFileURL(path.resolve(filePath)).href;
+function normalizePathToPosix(filePath) {
+  return filePath.replace(/\\/gu, "/");
+}
 
-  let index = artifactIndexByUri.get(uri);
+export function toSarifArtifactLocation(filePath, rootDir = process.cwd()) {
+  const absoluteFilePath = path.resolve(filePath);
+  const absoluteRootDir = path.resolve(rootDir);
+  const relativePath = path.relative(absoluteRootDir, absoluteFilePath);
+  const withinRoot =
+    relativePath === "" ||
+    (!relativePath.startsWith("..") && !path.isAbsolute(relativePath));
+
+  if (withinRoot) {
+    const uri = encodeURI(normalizePathToPosix(relativePath || path.basename(absoluteFilePath)));
+    return {
+      uri,
+      uriBaseId: SRCROOT_URI_BASE_ID,
+    };
+  }
+
+  return { uri: pathToFileURL(absoluteFilePath).href };
+}
+
+export function ensureArtifact(artifacts, artifactIndexByUri, filePath, rootDir = process.cwd()) {
+  const artifactLocation = toSarifArtifactLocation(filePath, rootDir);
+  const artifactKey = artifactLocation.uriBaseId
+    ? `${artifactLocation.uriBaseId}:${artifactLocation.uri}`
+    : artifactLocation.uri;
+
+  let index = artifactIndexByUri.get(artifactKey);
   if (index === undefined) {
     index = artifacts.length;
-    artifactIndexByUri.set(uri, index);
+    artifactIndexByUri.set(artifactKey, index);
     artifacts.push({
-      location: {
-        uri,
-      },
+      location: artifactLocation,
     });
   }
 
-  return { uri, index };
+  return { ...artifactLocation, index };
 }
 
-function toSarifResults(results, artifacts, artifactIndexByUri, ruleIndexById) {
+export function toSarifResults(
+  results,
+  artifacts,
+  artifactIndexByUri,
+  ruleIndexById,
+  rootDir = process.cwd(),
+) {
   const sarifResults = [];
 
   for (const result of results) {
-    const artifact = ensureArtifact(artifacts, artifactIndexByUri, result.filePath);
+    const artifact = ensureArtifact(artifacts, artifactIndexByUri, result.filePath, rootDir);
 
     for (const message of result.messages) {
       const region = toRegion(message);
@@ -79,6 +118,9 @@ function toSarifResults(results, artifacts, artifactIndexByUri, ruleIndexById) {
           index: artifact.index,
         },
       };
+      if (artifact.uriBaseId) {
+        physicalLocation.artifactLocation.uriBaseId = artifact.uriBaseId;
+      }
 
       if (region) {
         physicalLocation.region = region;
@@ -105,44 +147,83 @@ function toSarifResults(results, artifacts, artifactIndexByUri, ruleIndexById) {
   return sarifResults;
 }
 
-async function main() {
-  const { outputFile } = parseArgs(process.argv.slice(2));
-
-  const eslint = new ESLint();
-  const results = await eslint.lintFiles(LINT_TARGETS);
-  const rulesMeta = await eslint.getRulesMetaForResults(results);
-
-  const ruleEntries = Object.entries(rulesMeta);
-  const ruleIndexById = new Map(ruleEntries.map(([ruleId], index) => [ruleId, index]));
-  const rules = ruleEntries.map(([ruleId, meta]) => ({
+export function toSarifRules(rulesMeta) {
+  return Object.entries(rulesMeta).map(([ruleId, meta]) => ({
     id: ruleId,
     helpUri: meta?.docs?.url || "https://eslint.org/docs/latest/rules/",
     shortDescription: meta?.docs?.description ? { text: meta.docs.description } : undefined,
     properties: meta?.type ? { category: meta.type } : {},
   }));
+}
+
+export function buildSarif(results, rulesMeta, eslintVersion) {
+  const ruleEntries = Object.entries(rulesMeta);
+  const ruleIndexById = new Map(ruleEntries.map(([ruleId], index) => [ruleId, index]));
+  const rules = toSarifRules(rulesMeta);
 
   const artifacts = [];
   const artifactIndexByUri = new Map();
-  const sarifResults = toSarifResults(results, artifacts, artifactIndexByUri, ruleIndexById);
+  const rootDir = process.cwd();
+  const sarifResults = toSarifResults(results, artifacts, artifactIndexByUri, ruleIndexById, rootDir);
+  const hasSourceRootArtifacts = artifacts.some(
+    (artifact) => artifact.location.uriBaseId === SRCROOT_URI_BASE_ID,
+  );
 
-  const sarif = {
+  const run = {
+    tool: {
+      driver: {
+        name: "ESLint",
+        informationUri: "https://eslint.org",
+        version: eslintVersion,
+        rules,
+      },
+    },
+    artifacts,
+    results: sarifResults,
+  };
+
+  if (hasSourceRootArtifacts) {
+    run.originalUriBaseIds = {
+      [SRCROOT_URI_BASE_ID]: {
+        uri: pathToFileURL(`${path.resolve(rootDir)}${path.sep}`).href,
+      },
+    };
+  }
+
+  return {
     version: "2.1.0",
     $schema: "http://json.schemastore.org/sarif-2.1.0-rtm.5",
-    runs: [
-      {
-        tool: {
-          driver: {
-            name: "ESLint",
-            informationUri: "https://eslint.org",
-            version: ESLint.version,
-            rules,
-          },
-        },
-        artifacts,
-        results: sarifResults,
-      },
-    ],
+    runs: [run],
   };
+}
+
+export function countFindings(results) {
+  const errorCount = results.reduce((sum, result) => sum + result.errorCount, 0);
+  const warningCount = results.reduce((sum, result) => sum + result.warningCount, 0);
+  return { errorCount, warningCount };
+}
+
+export async function generateSarif(lintTargets = LINT_TARGETS) {
+  const { ESLint } = await import("eslint");
+  const eslint = new ESLint({ errorOnUnmatchedPattern: false });
+  const results = await eslint.lintFiles(lintTargets);
+  const rulesMeta = await eslint.getRulesMetaForResults(results);
+  const sarif = buildSarif(results, rulesMeta, ESLint.version);
+  const { errorCount, warningCount } = countFindings(results);
+
+  return { sarif, errorCount, warningCount, results, rulesMeta };
+}
+
+function isMainModule() {
+  if (!process.argv[1]) {
+    return false;
+  }
+  return pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url;
+}
+
+export async function runCli(argv = process.argv.slice(2)) {
+  const { outputFile } = parseArgs(argv);
+  const { sarif, errorCount, warningCount } = await generateSarif();
 
   const output = `${JSON.stringify(sarif, null, 2)}\n`;
 
@@ -154,15 +235,14 @@ async function main() {
     process.stdout.write(output);
   }
 
-  const errorCount = results.reduce((sum, result) => sum + result.errorCount, 0);
-  const warningCount = results.reduce((sum, result) => sum + result.warningCount, 0);
-
   if (errorCount > 0 || warningCount > 0) {
     process.exitCode = 1;
   }
 }
 
-main().catch((error) => {
-  process.stderr.write(`${error instanceof Error ? error.stack : String(error)}\n`);
-  process.exit(2);
-});
+if (isMainModule()) {
+  runCli().catch((error) => {
+    process.stderr.write(`${error instanceof Error ? error.stack : String(error)}\n`);
+    process.exit(2);
+  });
+}

@@ -11,20 +11,22 @@ With ESLint `10.2.x`, using the SARIF formatter directly can be problematic.
 
 - lints files through the ESLint Node API
 - maps findings to SARIF `results`
+- emits relative artifact URIs using `%SRCROOT%` for better GitHub mapping
 - writes output to a file or `stdout`
 - sets exit code `1` when errors or warnings are found
 
 ## Requirements
 
 - Node.js 20+ (recommended)
-- ESLint `10.2.x`
+- npm
 
 ## Usage
 
 ### 1. Run the script
 
 ```bash
-node eslint-sarif.mjs --output-file reports/eslint.sarif
+npm install
+npm run sarif -- --output-file reports/eslint.sarif
 ```
 
 Without `--output-file`, SARIF is written to `stdout`:
@@ -32,6 +34,8 @@ Without `--output-file`, SARIF is written to `stdout`:
 ```bash
 node eslint-sarif.mjs > reports/eslint.sarif
 ```
+
+If `--output-file` is passed without a value, the CLI exits with code `2`.
 
 ### 2. Adjust lint targets
 
@@ -42,6 +46,20 @@ const LINT_TARGETS = ["src", ".storybook", "vite.config.ts", "eslint.config.js"]
 ```
 
 Adjust this list to match your project.
+
+## Development
+
+Run tests:
+
+```bash
+npm test
+```
+
+Run linting:
+
+```bash
+npm run lint
+```
 
 ## Exit codes
 

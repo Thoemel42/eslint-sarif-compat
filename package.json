@@ -1,0 +1,30 @@
+{
+  "name": "eslint-sarif-compat",
+  "version": "0.1.0",
+  "description": "SARIF generator workaround for ESLint 10.2.x compatibility.",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "eslint-sarif-compat": "./eslint-sarif.mjs"
+  },
+  "files": [
+    "eslint-sarif.mjs",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "sarif": "node eslint-sarif.mjs",
+    "test": "node --test",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix"
+  },
+  "peerDependencies": {
+    "eslint": "^10.2.0"
+  },
+  "devDependencies": {
+    "eslint": "^10.2.0"
+  }
+}
